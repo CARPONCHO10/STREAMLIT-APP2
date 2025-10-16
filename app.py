@@ -14,7 +14,7 @@ st.set_page_config(page_title="Clasificador en vivo", page_icon="🎥", layout="
 st.title("🎥 Clasificación en vivo con Keras + Streamlit")
 st.caption("Cámara dentro de la página y resultados en la misma interfaz. Incluye selector de cámara/calidad y registro a CSV.")
 
-MODEL_PATH = "keras_Model.h5"
+MODEL_PATH = "keras_model.h5"
 LABELS_PATH = "labels.txt"
 DB_PATH = "predicciones.db"  # SQLite
 
