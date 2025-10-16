@@ -6,8 +6,7 @@ import pandas as pd
 import sqlite3
 from datetime import datetime
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration, VideoTransformerBase
-from tensorflow.keras.models import load_model
-import os
+from tensorflow.keras.models import load_model  # Keras dentro de TensorFlow
 
 st.set_page_config(page_title="Clasificador en vivo", page_icon="🎥", layout="wide")
 
@@ -16,43 +15,11 @@ st.caption("Cámara dentro de la página y resultados en la misma interfaz. Incl
 
 MODEL_PATH = "keras_Model.h5"
 LABELS_PATH = "labels.txt"
-
-# Verificar que los archivos existan
-if not os.path.exists(MODEL_PATH):
-    st.error(f"❌ No se encuentra el archivo del modelo: {MODEL_PATH}")
-    st.stop()
-
-if not os.path.exists(LABELS_PATH):
-    st.error(f"❌ No se encuentra el archivo de etiquetas: {LABELS_PATH}")
-    st.stop()
-
-@st.cache_resource
-def load_model_cached(model_path: str):
-    try:
-        return load_model(model_path, compile=False)
-    except Exception as e:
-        st.error(f"Error cargando el modelo: {e}")
-        return None
-
-@st.cache_data
-def load_labels(labels_path: str):
-    try:
-        with open(labels_path, "r", encoding="utf-8") as f:
-            return [line.strip() for line in f.readlines()]
-    except Exception as e:
-        st.error(f"Error cargando las etiquetas: {e}")
-        return []
-
-# Cargar recursos
-model = load_model_cached(MODEL_PATH)
-labels = load_labels(LABELS_PATH)
-
-if model is None or not labels:
-    st.stop()
+DB_PATH = "predicciones.db"  # SQLite
 
 # --- SQLite: crear tabla si no existe ---
 def init_db():
-    conn = sqlite3.connect("predicciones.db")
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
         CREATE TABLE IF NOT EXISTS predicciones (
@@ -66,7 +33,7 @@ def init_db():
     conn.close()
 
 def save_prediction_to_db(timestamp, label, confidence):
-    conn = sqlite3.connect("predicciones.db")
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("INSERT INTO predicciones (timestamp, label, confidence) VALUES (?, ?, ?)",
               (timestamp, label, confidence))
@@ -75,14 +42,30 @@ def save_prediction_to_db(timestamp, label, confidence):
 
 init_db()
 
-# --- Sidebar: opciones de cámara ---
+@st.cache_resource
+def load_model_cached(model_path: str):
+    return load_model(model_path, compile=False)
+
+@st.cache_data
+def load_labels(labels_path: str):
+    with open(labels_path, "r", encoding="utf-8") as f:
+        return [line.strip() for line in f.readlines()]
+
+# Cargar recursos
+try:
+    model = load_model_cached(MODEL_PATH)
+    labels = load_labels(LABELS_PATH)
+except Exception as e:
+    st.error(f"No se pudo cargar el modelo/etiquetas: {e}")
+    st.stop()
+
+# --- Sidebar: opciones de cámara y logging ---
 st.sidebar.header("Ajustes de cámara")
 facing = st.sidebar.selectbox(
-    "Tipo de cámara", 
-    options=["user", "environment"],
+    "Tipo de cámara (facingMode)", 
+    options=["auto (por defecto)", "user (frontal)", "environment (trasera)"],
     index=0
 )
-
 quality = st.sidebar.selectbox(
     "Calidad de video",
     options=["640x480", "1280x720", "1920x1080"],
@@ -90,16 +73,14 @@ quality = st.sidebar.selectbox(
 )
 w, h = map(int, quality.split("x"))
 
-video_constraints = {
-    "width": w, 
-    "height": h,
-    "facingMode": facing
-}
+video_constraints: dict = {"width": w, "height": h}
+if facing != "auto (por defecto)":
+    video_constraints["facingMode"] = facing.split(" ")[0]
 
 media_constraints = {"video": video_constraints, "audio": False}
 
 st.sidebar.header("Registro de predicciones")
-enable_log = st.sidebar.checkbox("Habilitar registro", value=True)
+enable_log = st.sidebar.checkbox("Habilitar registro (CSV + DB)", value=True)
 log_every_n_seconds = st.sidebar.slider("Intervalo de registro (s)", 0.2, 5.0, 1.0, 0.2)
 
 if "pred_log" not in st.session_state:
@@ -130,12 +111,10 @@ class VideoTransformer(VideoTransformerBase):
 
         self.latest = {"class": label, "confidence": conf}
 
-        # Overlay con resultados
         overlay = img.copy()
         text = f"{label} | {conf*100:.1f}%"
         cv2.rectangle(overlay, (5, 5), (5 + 8*len(text), 45), (0, 0, 0), -1)
         cv2.putText(overlay, text, (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2, cv2.LINE_AA)
-        
         return overlay
 
 left, right = st.columns([2, 1], gap="large")
@@ -150,10 +129,9 @@ with left:
         video_transformer_factory=VideoTransformer,
         async_processing=True,
     )
-    
     st.info(
-        "Activa la cámara para comenzar la clasificación en tiempo real. "
-        "En móviles, 'user' = frontal y 'environment' = trasera.",
+        "Si no ves tu cámara, concede permisos del navegador o prueba con otro (Chrome recomendado). "
+        "En móviles, 'user' = frontal y 'environment' = trasera (si el dispositivo lo soporta).",
         icon="ℹ️",
     )
 
@@ -167,16 +145,15 @@ with right:
             st.session_state.pred_log = st.session_state.pred_log.iloc[0:0]
             st.session_state.last_log_ts = 0.0
 
-    if not st.session_state.pred_log.empty:
-        csv_bytes = st.session_state.pred_log.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "⬇️ Descargar CSV",
-            data=csv_bytes,
-            file_name=f"predicciones_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv",
-        )
+    csv_bytes = st.session_state.pred_log.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "⬇️ Descargar CSV de predicciones",
+        data=csv_bytes,
+        file_name=f"predicciones_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv",
+        disabled=st.session_state.pred_log.empty,
+    )
 
-    # Mostrar predicciones en tiempo real
     if webrtc_ctx and webrtc_ctx.state.playing:
         for _ in range(300000):
             if not webrtc_ctx.state.playing:
@@ -202,13 +179,12 @@ with right:
 
             time.sleep(0.2)
     else:
-        st.write("Activa la cámara para ver las predicciones aquí.")
+        st.write("Activa la cámara para ver aquí las predicciones.")
 
-# Modo alternativo con captura de foto
 st.markdown("---")
-with st.expander("📸 Modo alternativo (captura por foto)"):
-    st.write("Si hay problemas con la cámara en vivo, usa esta opción:")
-    snap = st.camera_input("Captura una imagen para clasificar")
+with st.expander("⚠️ Modo alternativo (captura por foto, sin WebRTC)"):
+    st.write("Si tu red bloquea WebRTC, usa una foto para predecir de forma puntual.")
+    snap = st.camera_input("Captura una imagen")
     if snap is not None:
         file_bytes = np.asarray(bytearray(snap.read()), dtype=np.uint8)
         img = cv2.imdecode(file_bytes, 1)
@@ -219,14 +195,8 @@ with st.expander("📸 Modo alternativo (captura por foto)"):
         idx = int(np.argmax(pred))
         label = labels[idx] if idx < len(labels) else f"Clase {idx}"
         conf = float(pred[0][idx])
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.image(img, caption="Imagen capturada", use_column_width=True)
-        with col2:
-            st.success(f"**Predicción:** {label}")
-            st.metric("Confianza", f"{conf*100:.2f}%")
-        
+        st.image(img, caption=f"{label} | {conf*100:.2f}%")
+        st.success(f"Predicción: **{label}** ({conf*100:.2f}%)")
         if enable_log:
             timestamp = datetime.utcnow().isoformat()
             st.session_state.pred_log.loc[len(st.session_state.pred_log)] = [
