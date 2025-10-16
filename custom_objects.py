@@ -5,18 +5,15 @@ Soluciona el error de deserialización de DepthwiseConv2D
 
 import tensorflow as tf
 from tensorflow.keras.layers import DepthwiseConv2D
-from tensorflow.keras import Model
 
 def get_custom_objects():
     """
     Retorna un diccionario con las capas personalizadas
     que TensorFlow no puede reconocer automáticamente
     """
-    custom_objects = {
+    return {
         'DepthwiseConv2D': DepthwiseConv2D,
     }
-    
-    return custom_objects
 
 def load_model_with_fixes(model_path):
     """

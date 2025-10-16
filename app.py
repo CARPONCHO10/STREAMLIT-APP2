@@ -36,21 +36,10 @@ def verificar_archivos():
     archivos_requeridos = {
         "Modelo Keras": MODEL_PATH,
         "Etiquetas": LABELS_PATH,
-        "Requirements": "requirements.txt",
-        "Runtime": "runtime.txt"
+        "Requirements": "requirements.txt"
     }
     
-    todos_existen = True
-    
-    for nombre, archivo in archivos_requeridos.items():
-        if os.path.exists(archivo):
-            st.sidebar.success(f"✅ {nombre}: {archivo}")
-        else:
-            st.sidebar.error(f"❌ {nombre}: {archivo} - NO ENCONTRADO")
-            todos_existen = False
-    
     # Listar todos los archivos en el directorio
-    st.sidebar.write("---")
     st.sidebar.write("**Todos los archivos en el directorio:**")
     try:
         files = os.listdir(".")
@@ -59,6 +48,15 @@ def verificar_archivos():
             st.sidebar.write(f"{icon} {file}")
     except Exception as e:
         st.sidebar.error(f"Error al listar archivos: {e}")
+    
+    # Verificar archivos requeridos
+    todos_existen = True
+    for nombre, archivo in archivos_requeridos.items():
+        if os.path.exists(archivo):
+            st.sidebar.success(f"✅ {nombre}: {archivo}")
+        else:
+            st.sidebar.error(f"❌ {nombre}: {archivo} - NO ENCONTRADO")
+            todos_existen = False
     
     return todos_existen
 
@@ -124,22 +122,45 @@ def load_model_cached(model_path: str):
     Carga el modelo Keras con manejo de errores y compatibilidad
     """
     try:
-        # Importar la función de carga segura
-        from custom_objects import load_model_with_fixes
-        model = load_model_with_fixes(model_path)
-        return model
+        # Primero intentar importar tensorflow
+        try:
+            from tensorflow.keras.models import load_model
+        except ImportError as e:
+            st.error(f"❌ TensorFlow no está instalado: {e}")
+            st.stop()
+        
+        # Intentar carga con custom_objects si existe
+        try:
+            from custom_objects import load_model_with_fixes
+            model = load_model_with_fixes(model_path)
+            st.sidebar.success("✅ Modelo cargado con custom_objects")
+            return model
+        except ImportError:
+            # Si no existe custom_objects, intentar carga normal
+            st.sidebar.info("ℹ️ Cargando modelo sin custom_objects...")
+            model = load_model(model_path, compile=False)
+            st.sidebar.success("✅ Modelo cargado normalmente")
+            return model
+            
     except Exception as e:
         st.error(f"""
         **❌ Error crítico al cargar el modelo**
         
-        **Detalle del error:** {e}
+        **Detalle del error:** {str(e)}
         
         **Posibles soluciones:**
-        1. Verifica que el modelo sea compatible con TensorFlow 2.13
-        2. Revisa que el archivo .h5 no esté corrupto
-        3. El modelo podría necesitar ser reentrenado o convertido
+        1. Verifica que el modelo sea compatible con TensorFlow 2.20
+        2. El archivo .h5 podría estar corrupto
+        3. Intenta reconvertir el modelo
         """)
-        st.stop()
+        # Intentar una última vez sin cache
+        try:
+            from tensorflow.keras.models import load_model
+            model = load_model(model_path, compile=False)
+            st.sidebar.success("✅ Modelo cargado en segundo intento")
+            return model
+        except:
+            st.stop()
 
 @st.cache_data
 def load_labels(labels_path: str):
@@ -151,14 +172,15 @@ def load_labels(labels_path: str):
         return labels
     except Exception as e:
         st.error(f"Error cargando etiquetas: {e}")
-        return ["Clase 0", "Clase 1"]  # Etiquetas por defecto
+        # Crear etiquetas por defecto basadas en el número de clases
+        return [f"Clase {i}" for i in range(10)]
 
 # Cargar modelo y etiquetas
 with st.spinner("🔄 Cargando modelo y etiquetas (esto puede tomar unos segundos)..."):
     try:
         model = load_model_cached(MODEL_PATH)
         labels = load_labels(LABELS_PATH)
-        st.success("✅ Modelo y etiquetas cargados correctamente")
+        st.success(f"✅ Sistema listo - Modelo: {len(labels)} clases")
     except Exception as e:
         st.error(f"Error durante la carga: {e}")
         st.stop()
@@ -236,38 +258,44 @@ class VideoTransformer(VideoTransformerBase):
         self.prediction_count = 0
 
     def transform(self, frame):
-        # Convertir frame a array numpy
-        img = frame.to_ndarray(format="bgr24")
-        
-        # Preprocesamiento para el modelo
-        resized = cv2.resize(img, (224, 224), interpolation=cv2.INTER_AREA)
-        x = resized.astype(np.float32).reshape(1, 224, 224, 3)
-        x = (x / 127.5) - 1.0  # Normalizar a [-1, 1]
+        try:
+            # Convertir frame a array numpy
+            img = frame.to_ndarray(format="bgr24")
+            
+            # Preprocesamiento para el modelo (224x224 como es típico en Keras)
+            resized = cv2.resize(img, (224, 224), interpolation=cv2.INTER_AREA)
+            x = resized.astype(np.float32).reshape(1, 224, 224, 3)
+            x = (x / 127.5) - 1.0  # Normalizar a [-1, 1]
 
-        # Realizar predicción
-        pred = self.model.predict(x, verbose=0)
-        idx = int(np.argmax(pred))
-        label = self.labels[idx] if idx < len(self.labels) else f"Clase {idx}"
-        conf = float(pred[0][idx])
+            # Realizar predicción
+            pred = self.model.predict(x, verbose=0)
+            idx = int(np.argmax(pred))
+            label = self.labels[idx] if idx < len(self.labels) else f"Clase {idx}"
+            conf = float(pred[0][idx])
 
-        # Actualizar información más reciente
-        self.latest = {"class": label, "confidence": conf}
-        self.prediction_count += 1
-        st.session_state.total_predictions = self.prediction_count
+            # Actualizar información más reciente
+            self.latest = {"class": label, "confidence": conf}
+            self.prediction_count += 1
+            st.session_state.total_predictions = self.prediction_count
 
-        # Dibujar overlay en el video
-        overlay = img.copy()
-        text = f"{label} | {conf*100:.1f}%"
-        
-        # Fondo semitransparente para el texto
-        cv2.rectangle(overlay, (5, 5), (5 + 12*len(text), 50), (0, 0, 0), -1)
-        cv2.addWeighted(overlay, 0.7, img, 0.3, 0, img)
-        
-        # Texto
-        cv2.putText(img, text, (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 
-                   1.0, (0, 255, 0), 2, cv2.LINE_AA)
-        
-        return img
+            # Dibujar overlay en el video
+            overlay = img.copy()
+            text = f"{label} | {conf*100:.1f}%"
+            
+            # Fondo semitransparente para el texto
+            cv2.rectangle(overlay, (5, 5), (5 + 12*len(text), 50), (0, 0, 0), -1)
+            cv2.addWeighted(overlay, 0.7, img, 0.3, 0, img)
+            
+            # Texto
+            cv2.putText(img, text, (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 
+                       1.0, (0, 255, 0), 2, cv2.LINE_AA)
+            
+            return img
+            
+        except Exception as e:
+            # En caso de error, devolver frame original
+            st.sidebar.error(f"Error en transform: {e}")
+            return frame.to_ndarray(format="bgr24")
 
 # =============================================================================
 # 7. INTERFAZ PRINCIPAL
@@ -340,6 +368,11 @@ with right_col:
         if not st.session_state.pred_log.empty:
             avg_confidence = st.session_state.pred_log['confidence'].mean() * 100
             st.write(f"- Confianza promedio: {avg_confidence:.1f}%")
+            
+            # Clase más frecuente
+            most_common = st.session_state.pred_log['label'].mode()
+            if not most_common.empty:
+                st.write(f"- Clase más detectada: {most_common.iloc[0]}")
 
 # =============================================================================
 # 8. BUCLE PRINCIPAL DE ACTUALIZACIÓN
@@ -351,7 +384,8 @@ if webrtc_ctx and webrtc_ctx.state.playing:
         webrtc_ctx.video_transformer = VideoTransformer()
     
     # Bucle de actualización
-    for _ in range(1000):  # Límite de iteraciones por seguridad
+    max_iterations = 1000  # Límite por seguridad
+    for iteration in range(max_iterations):
         if not webrtc_ctx.state.playing:
             break
             
@@ -363,7 +397,8 @@ if webrtc_ctx and webrtc_ctx.state.playing:
             # Actualizar interfaz
             result_placeholder.markdown(
                 f"**🎯 Clase detectada:** `{cls}`\n\n"
-                f"**📈 Confianza:** `{conf*100:.2f}%`"
+                f"**📈 Confianza:** `{conf*100:.2f}%`\n\n"
+                f"**🔢 Predicciones:** `{vt.prediction_count}`"
             )
             progress_placeholder.progress(min(max(conf, 0.0), 1.0))
             
@@ -389,6 +424,9 @@ if webrtc_ctx and webrtc_ctx.state.playing:
                     st.session_state.last_log_ts = now
         
         time.sleep(0.1)  # Controlar frecuencia de actualización
+        
+    if iteration >= max_iterations - 1:
+        st.sidebar.warning("⚠️ Bucle de actualización alcanzó límite máximo")
 
 # =============================================================================
 # 9. MODO ALTERNATIVO (SIN WEBRTC)
@@ -414,42 +452,72 @@ with st.expander("🔄 Modo alternativo: Clasificación por imagen"):
         file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
         img = cv2.imdecode(file_bytes, 1)
         
-        # Mostrar imagen original
-        st.image(img, channels="BGR", caption="📷 Imagen original", use_column_width=True)
-        
-        # Realizar predicción
-        with st.spinner("🔍 Analizando imagen..."):
-            resized = cv2.resize(img, (224, 224), interpolation=cv2.INTER_AREA)
-            x = resized.astype(np.float32).reshape(1, 224, 224, 3)
-            x = (x / 127.5) - 1.0
+        if img is not None:
+            # Mostrar imagen original
+            st.image(img, channels="BGR", caption="📷 Imagen original", use_column_width=True)
             
-            pred = model.predict(x, verbose=0)
-            idx = int(np.argmax(pred))
-            label = labels[idx] if idx < len(labels) else f"Clase {idx}"
-            conf = float(pred[0][idx])
-        
-        # Mostrar resultados
-        st.success(f"**🎯 Resultado:** {label}")
-        st.metric("📊 Confianza", f"{conf*100:.2f}%")
-        
-        # Registrar si está habilitado
-        if enable_log:
-            timestamp = datetime.utcnow().isoformat()
-            new_row = pd.DataFrame([{
-                "timestamp": timestamp,
-                "label": label,
-                "confidence": round(conf, 6)
-            }])
-            st.session_state.pred_log = pd.concat(
-                [st.session_state.pred_log, new_row], 
-                ignore_index=True
-            )
-            save_prediction_to_db(timestamp, label, round(conf, 6))
-            st.success("✅ Predicción guardada en el registro")
+            # Realizar predicción
+            with st.spinner("🔍 Analizando imagen..."):
+                try:
+                    resized = cv2.resize(img, (224, 224), interpolation=cv2.INTER_AREA)
+                    x = resized.astype(np.float32).reshape(1, 224, 224, 3)
+                    x = (x / 127.5) - 1.0
+                    
+                    pred = model.predict(x, verbose=0)
+                    idx = int(np.argmax(pred))
+                    label = labels[idx] if idx < len(labels) else f"Clase {idx}"
+                    conf = float(pred[0][idx])
+                
+                    # Mostrar resultados
+                    st.success(f"**🎯 Resultado:** {label}")
+                    st.metric("📊 Confianza", f"{conf*100:.2f}%")
+                    
+                    # Mostrar todas las probabilidades
+                    with st.expander("📋 Ver todas las probabilidades"):
+                        for i, prob in enumerate(pred[0]):
+                            class_name = labels[i] if i < len(labels) else f"Clase {i}"
+                            st.write(f"{class_name}: {prob*100:.2f}%")
+                    
+                    # Registrar si está habilitado
+                    if enable_log:
+                        timestamp = datetime.utcnow().isoformat()
+                        new_row = pd.DataFrame([{
+                            "timestamp": timestamp,
+                            "label": label,
+                            "confidence": round(conf, 6)
+                        }])
+                        st.session_state.pred_log = pd.concat(
+                            [st.session_state.pred_log, new_row], 
+                            ignore_index=True
+                        )
+                        save_prediction_to_db(timestamp, label, round(conf, 6))
+                        st.success("✅ Predicción guardada en el registro")
+                        
+                except Exception as e:
+                    st.error(f"Error durante la predicción: {e}")
+        else:
+            st.error("❌ No se pudo decodificar la imagen")
 
 # =============================================================================
-# 10. PIE DE PÁGINA
+# 10. INFORMACIÓN DEL SISTEMA
 # =============================================================================
 
 st.markdown("---")
-st.caption(f"Última actualización: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+with st.expander("🔧 Información del sistema"):
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.write("**Archivos cargados:**")
+        st.write(f"- Modelo: {MODEL_PATH} ({'✅' if os.path.exists(MODEL_PATH) else '❌'})")
+        st.write(f"- Etiquetas: {LABELS_PATH} ({'✅' if os.path.exists(LABELS_PATH) else '❌'})")
+        st.write(f"- Número de clases: {len(labels)}")
+        
+    with col2:
+        st.write("**Estadísticas de sesión:**")
+        st.write(f"- Predicciones totales: {st.session_state.total_predictions}")
+        st.write(f"- Registros guardados: {len(st.session_state.pred_log)}")
+        if not st.session_state.pred_log.empty:
+            st.write(f"- Primera predicción: {st.session_state.pred_log['timestamp'].iloc[0]}")
+            st.write(f"- Última predicción: {st.session_state.pred_log['timestamp'].iloc[-1]}")
+
+st.caption(f"Última actualización: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Streamlit + TensorFlow + OpenCV")
