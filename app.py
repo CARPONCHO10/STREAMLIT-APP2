@@ -4,6 +4,7 @@ import cv2
 import streamlit as st
 import pandas as pd
 import sqlite3
+import os
 from datetime import datetime
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration, VideoTransformerBase
 from tensorflow.keras.models import load_model  # Keras dentro de TensorFlow
@@ -16,6 +17,32 @@ st.caption("Cámara dentro de la página y resultados en la misma interfaz. Incl
 MODEL_PATH = "keras_Model.h5"
 LABELS_PATH = "labels.txt"
 DB_PATH = "predicciones.db"  # SQLite
+
+# --- VERIFICAR ARCHIVOS ---
+st.sidebar.header("📁 Verificación de archivos")
+st.sidebar.write("Lista de archivos en el directorio:")
+try:
+    files = os.listdir(".")
+    for file in files:
+        st.sidebar.write(f"📄 {file}")
+except Exception as e:
+    st.sidebar.error(f"Error al listar archivos: {e}")
+
+# Verificar si los archivos existen
+if not os.path.exists(MODEL_PATH):
+    st.error(f"❌ No se encuentra: {MODEL_PATH}")
+    st.info("""
+    **Solución:**
+    1. Verifica que 'keras_Model.h5' esté en tu repositorio de GitHub
+    2. Confirma que el nombre del archivo sea exactamente 'keras_Model.h5'
+    3. Si el archivo es muy grande (>500MB), considera comprimirlo o usar un modelo más pequeño
+    """)
+    
+if not os.path.exists(LABELS_PATH):
+    st.error(f"❌ No se encuentra: {LABELS_PATH}")
+    
+if os.path.exists(MODEL_PATH) and os.path.exists(LABELS_PATH):
+    st.success("✅ Ambos archivos encontrados correctamente")
 
 # --- SQLite: crear tabla si no existe ---
 def init_db():
@@ -51,12 +78,18 @@ def load_labels(labels_path: str):
     with open(labels_path, "r", encoding="utf-8") as f:
         return [line.strip() for line in f.readlines()]
 
-# Cargar recursos
-try:
-    model = load_model_cached(MODEL_PATH)
-    labels = load_labels(LABELS_PATH)
-except Exception as e:
-    st.error(f"No se pudo cargar el modelo/etiquetas: {e}")
+# Cargar recursos SOLO si los archivos existen
+if os.path.exists(MODEL_PATH) and os.path.exists(LABELS_PATH):
+    try:
+        with st.spinner("🔄 Cargando modelo y etiquetas..."):
+            model = load_model_cached(MODEL_PATH)
+            labels = load_labels(LABELS_PATH)
+        st.success("✅ Modelo y etiquetas cargados correctamente")
+    except Exception as e:
+        st.error(f"No se pudo cargar el modelo/etiquetas: {e}")
+        st.stop()
+else:
+    st.error("❌ No se pueden cargar los recursos - archivos no encontrados")
     st.stop()
 
 # --- Sidebar: opciones de cámara y logging ---
