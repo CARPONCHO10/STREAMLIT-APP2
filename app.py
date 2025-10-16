@@ -44,7 +44,7 @@ def load_labels(labels_path: str):
         return []
 
 # Cargar recursos
-model = load_model_cached(MODEL_PATH)
+model = load_model_cached(MODEL_PATH, compile=False)
 labels = load_labels(LABELS_PATH)
 
 if model is None or not labels:
