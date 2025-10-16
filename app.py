@@ -6,7 +6,7 @@ import pandas as pd
 import sqlite3
 from datetime import datetime
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration, VideoProcessorBase
-from tensorflow.keras.models import load_model
+from keras.models import load_model  # Cambiado de tensorflow.keras a keras
 import os
 
 st.set_page_config(page_title="Clasificador en vivo", page_icon="🎥", layout="wide")
@@ -44,11 +44,36 @@ def load_labels(labels_path: str):
         return []
 
 # Cargar recursos
-model = load_model_cached(MODEL_PATH, compile=False)
+model = load_model_cached(MODEL_PATH)
 labels = load_labels(LABELS_PATH)
 
 if model is None or not labels:
     st.stop()
+
+# --- SQLite: crear tabla si no existe ---
+def init_db():
+    conn = sqlite3.connect("predicciones.db")
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS predicciones (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            label TEXT,
+            confidence REAL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def save_prediction_to_db(timestamp, label, confidence):
+    conn = sqlite3.connect("predicciones.db")
+    c = conn.cursor()
+    c.execute("INSERT INTO predicciones (timestamp, label, confidence) VALUES (?, ?, ?)",
+              (timestamp, label, confidence))
+    conn.commit()
+    conn.close()
+
+init_db()
 
 # --- Sidebar: opciones de cámara ---
 st.sidebar.header("Ajustes de cámara")
@@ -153,23 +178,29 @@ with right:
 
     # Mostrar predicciones en tiempo real
     if webrtc_ctx and webrtc_ctx.state.playing:
-        vt = webrtc_ctx.video_processor
-        if vt is not None and vt.latest["class"] is not None:
-            cls = vt.latest["class"]
-            conf = vt.latest["confidence"]
-            result_placeholder.markdown(f"**Clase detectada:** `{cls}`\n\n**Confianza:** `{conf*100:.2f}%`")
-            progress_placeholder.progress(min(max(conf, 0.0), 1.0))
+        for _ in range(300000):  # Loop para mantener actualizadas las predicciones
+            if not webrtc_ctx.state.playing:
+                break
+            vt = webrtc_ctx.video_processor
+            if vt is not None and vt.latest["class"] is not None:
+                cls = vt.latest["class"]
+                conf = vt.latest["confidence"]
+                result_placeholder.markdown(f"**Clase detectada:** `{cls}`\n\n**Confianza:** `{conf*100:.2f}%`")
+                progress_placeholder.progress(min(max(conf, 0.0), 1.0))
 
-            if enable_log:
-                now = time.time()
-                if now - st.session_state.last_log_ts >= log_every_n_seconds:
-                    timestamp = datetime.utcnow().isoformat()
-                    st.session_state.pred_log.loc[len(st.session_state.pred_log)] = [
-                        timestamp,
-                        cls,
-                        round(conf, 6),
-                    ]
-                    st.session_state.last_log_ts = now
+                if enable_log:
+                    now = time.time()
+                    if now - st.session_state.last_log_ts >= log_every_n_seconds:
+                        timestamp = datetime.utcnow().isoformat()
+                        st.session_state.pred_log.loc[len(st.session_state.pred_log)] = [
+                            timestamp,
+                            cls,
+                            round(conf, 6),
+                        ]
+                        save_prediction_to_db(timestamp, cls, round(conf, 6))
+                        st.session_state.last_log_ts = now
+
+            time.sleep(0.2)
     else:
         st.write("Activa la cámara para ver las predicciones aquí.")
 
@@ -203,3 +234,4 @@ with st.expander("📸 Modo alternativo (captura por foto)"):
                 label,
                 round(conf, 6),
             ]
+            save_prediction_to_db(timestamp, label, round(conf, 6))
