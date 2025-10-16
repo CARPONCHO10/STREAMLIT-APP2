@@ -6,12 +6,11 @@ import pandas as pd
 import sqlite3
 from datetime import datetime
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration, VideoProcessorBase
-from keras.models import load_model  # Cambiado de tensorflow.keras a keras
 import os
 
 st.set_page_config(page_title="Clasificador en vivo", page_icon="🎥", layout="wide")
 
-st.title("🎥 Clasificación en vivo con Keras + Streamlit")
+st.title("🎥 Clasificación en vivo con Streamlit")
 st.caption("Cámara dentro de la página y resultados en la misma interfaz. Incluye selector de cámara/calidad y registro a CSV.")
 
 MODEL_PATH = "keras_Model.h5"
@@ -26,14 +25,6 @@ if not os.path.exists(LABELS_PATH):
     st.error(f"❌ No se encuentra el archivo de etiquetas: {LABELS_PATH}")
     st.stop()
 
-@st.cache_resource
-def load_model_cached(model_path: str):
-    try:
-        return load_model(model_path, compile=False)
-    except Exception as e:
-        st.error(f"Error cargando el modelo: {e}")
-        return None
-
 @st.cache_data
 def load_labels(labels_path: str):
     try:
@@ -43,11 +34,10 @@ def load_labels(labels_path: str):
         st.error(f"Error cargando las etiquetas: {e}")
         return []
 
-# Cargar recursos
-model = load_model_cached(MODEL_PATH)
+# Cargar etiquetas
 labels = load_labels(LABELS_PATH)
 
-if model is None or not labels:
+if not labels:
     st.stop()
 
 # --- SQLite: crear tabla si no existe ---
@@ -113,26 +103,22 @@ RTC_CONFIGURATION = RTCConfiguration(
 
 class VideoProcessor(VideoProcessorBase):
     def __init__(self) -> None:
-        self.latest = {"class": None, "confidence": 0.0}
-        self.model = model
+        self.latest = {"class": "Demo Mode", "confidence": 0.85}
         self.labels = labels
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
-        resized = cv2.resize(img, (224, 224), interpolation=cv2.INTER_AREA)
-        x = resized.astype(np.float32).reshape(1, 224, 224, 3)
-        x = (x / 127.5) - 1.0
-
-        pred = self.model.predict(x, verbose=0)
-        idx = int(np.argmax(pred))
-        label = self.labels[idx] if idx < len(self.labels) else f"Clase {idx}"
-        conf = float(pred[0][idx])
-
+        
+        # Simular predicción (modo demo)
+        # En una implementación real, aquí iría la carga y predicción del modelo
+        label = self.labels[0] if self.labels else "Demo Class"
+        conf = 0.85
+        
         self.latest = {"class": label, "confidence": conf}
 
         # Overlay con resultados
         overlay = img.copy()
-        text = f"{label} | {conf*100:.1f}%"
+        text = f"{label} | {conf*100:.1f}% (Demo)"
         cv2.rectangle(overlay, (5, 5), (5 + 8*len(text), 45), (0, 0, 0), -1)
         cv2.putText(overlay, text, (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2, cv2.LINE_AA)
         
@@ -142,6 +128,8 @@ left, right = st.columns([2, 1], gap="large")
 
 with left:
     st.subheader("Cámara en vivo")
+    st.warning("⚠️ Modo Demo: La clasificación está simulada. Para usar el modelo real, necesitarías TensorFlow/Keras.")
+    
     webrtc_ctx = webrtc_streamer(
         key="keras-live",
         mode=WebRtcMode.SENDRECV,
@@ -178,7 +166,7 @@ with right:
 
     # Mostrar predicciones en tiempo real
     if webrtc_ctx and webrtc_ctx.state.playing:
-        for _ in range(300000):  # Loop para mantener actualizadas las predicciones
+        for _ in range(300000):
             if not webrtc_ctx.state.playing:
                 break
             vt = webrtc_ctx.video_processor
@@ -212,13 +200,10 @@ with st.expander("📸 Modo alternativo (captura por foto)"):
     if snap is not None:
         file_bytes = np.asarray(bytearray(snap.read()), dtype=np.uint8)
         img = cv2.imdecode(file_bytes, 1)
-        resized = cv2.resize(img, (224, 224), interpolation=cv2.INTER_AREA)
-        x = resized.astype(np.float32).reshape(1, 224, 224, 3)
-        x = (x / 127.5) - 1.0
-        pred = model.predict(x, verbose=0)
-        idx = int(np.argmax(pred))
-        label = labels[idx] if idx < len(labels) else f"Clase {idx}"
-        conf = float(pred[0][idx])
+        
+        # Simular predicción
+        label = labels[0] if labels else "Demo Class"
+        conf = 0.78
         
         col1, col2 = st.columns(2)
         with col1:
